@@ -86,6 +86,9 @@ struct ucontext_t {
 extern "C" int pthread_attr_init(void *attr);
 extern "C" int pthread_attr_destroy(void *attr);
 DECLARE_REAL(int, pthread_attr_getdetachstate, void *, void *)
+// Declared here so that DoPthreadCreate below can be defined before the
+// pthread_create interceptor that emits the definition of REAL(pthread_create).
+DECLARE_REAL(int, pthread_create, void *, void *, void *(*)(void *), void *)
 extern "C" int pthread_attr_setstacksize(void *attr, uptr stacksize);
 extern "C" int pthread_atfork(void (*prepare)(void), void (*parent)(void),
                               void (*child)(void));
@@ -1038,6 +1041,14 @@ static void thread_finalize(void *v) {
 struct ThreadParam {
   void* (*callback)(void *arg);
   void *param;
+  // Set for threads created through C11 thrd_create, whose start routine is an
+  // int (*)(void *) rather than a void *(*)(void *). Keeping the flag here,
+  // rather than wrapping the callback in an adapter that owns its own argument,
+  // matters for lifetime: everything the child reads out of ThreadParam is read
+  // before `started` is posted, while the creating thread is still blocked in
+  // `started.Wait()`. An adapter argument would instead be read after the
+  // creator has resumed and its frame may be gone.
+  bool c11;
   Tid tid;
   Semaphore created;
   Semaphore started;
@@ -1047,6 +1058,7 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
   ThreadParam *p = (ThreadParam*)arg;
   void* (*callback)(void *arg) = p->callback;
   void *param = p->param;
+  bool c11 = p->c11;
   {
     ThreadState *thr = cur_thread_init();
     // Thread-local state is not initialized yet.
@@ -1069,7 +1081,15 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
 
   AdaptiveDelay::BeforeChildThreadRuns();
 
-  void *res = callback(param);
+  void *res;
+  if (c11) {
+    // Convert the C11 exit code the way glibc's own C11 thread startup does,
+    // so that pthread_join (and hence thrd_join) observes it unchanged.
+    int (*c11_callback)(void *arg) = (int (*)(void *arg))callback;
+    res = (void *)(uptr)c11_callback(param);
+  } else {
+    res = callback(param);
+  }
   // Prevent the callback from being tail called,
   // it mixes up stack traces.
   volatile int foo = 42;
@@ -1077,10 +1097,11 @@ extern "C" void *__tsan_thread_start_func(void *arg) {
   return res;
 }
 
-TSAN_INTERCEPTOR(int, pthread_create,
-    void *th, void *attr, void *(*callback)(void*), void * param) {
-  SCOPED_INTERCEPTOR_RAW(pthread_create, th, attr, callback, param);
-
+// Shared by the pthread_create and thrd_create interceptors. `attr` may be null,
+// in which case a default (joinable) attribute is used, which is what C11
+// thrd_create needs. `c11` selects how the child's return value is converted.
+static int DoPthreadCreate(ThreadState *thr, uptr pc, void *th, void *attr,
+                           void *(*callback)(void *), void *param, bool c11) {
   MaybeSpawnBackgroundThread();
 
   if (ctx->after_multithreaded_fork) {
@@ -1108,6 +1129,7 @@ TSAN_INTERCEPTOR(int, pthread_create,
   ThreadParam p;
   p.callback = callback;
   p.param = param;
+  p.c11 = c11;
   p.tid = kMainTid;
   int res = -1;
   {
@@ -1134,6 +1156,12 @@ TSAN_INTERCEPTOR(int, pthread_create,
     pthread_attr_destroy(&myattr);
   AdaptiveDelay::AfterThreadCreation();
   return res;
+}
+
+TSAN_INTERCEPTOR(int, pthread_create,
+    void *th, void *attr, void *(*callback)(void*), void * param) {
+  SCOPED_INTERCEPTOR_RAW(pthread_create, th, attr, callback, param);
+  return DoPthreadCreate(thr, pc, th, attr, callback, param, /*c11=*/false);
 }
 
 TSAN_INTERCEPTOR(int, pthread_join, void *th, void **ret) {
@@ -1196,6 +1224,90 @@ TSAN_INTERCEPTOR(void, pthread_exit, void *retval) {
   }
   REAL(pthread_exit)(retval);
 }
+
+#if SANITIZER_GLIBC
+// C11 <threads.h>. glibc implements these as thin wrappers that reach the
+// pthread entry points through a direct intra-DSO call rather than through the
+// PLT, so symbol interposition never redirects them and the interceptors above
+// do not run. For thrd_create that is not merely a missed happens-before edge:
+// the child never goes through __tsan_thread_start_func, so its ThreadState is
+// left zero-initialized, and the first instrumented function the child enters
+// dereferences it (FuncEntry() has no is_inited check) and crashes. Intercept
+// the C11 entry points directly and do the same bookkeeping.
+//
+// thrd_t is pthread_t, so the thread identifier is passed straight through, as
+// the pthread interceptors already do.
+//
+// C11 return codes, from <threads.h>; spelled out because interceptors must not
+// include system headers.
+enum {
+  thrd_success = 0,
+  thrd_busy = 1,
+  thrd_error = 2,
+  thrd_nomem = 3,
+};
+
+// Mirrors glibc's shared thrd_err_map. glibc also maps ETIMEDOUT to
+// thrd_timedout, which none of the pthread calls used below can return.
+static int ThrdErrMap(int err) {
+  switch (err) {
+    case 0:
+      return thrd_success;
+    case errno_ENOMEM:
+      return thrd_nomem;
+    case errno_EBUSY:
+      return thrd_busy;
+    default:
+      return thrd_error;
+  }
+}
+
+TSAN_INTERCEPTOR(int, thrd_create, void *th, int (*callback)(void *),
+                 void *param) {
+  SCOPED_INTERCEPTOR_RAW(thrd_create, th, callback, param);
+  // A null attr gives a default, joinable thread, which is what C11 requires.
+  return ThrdErrMap(DoPthreadCreate(thr, pc, th, nullptr,
+                                    (void *(*)(void *))callback, param,
+                                    /*c11=*/true));
+}
+
+TSAN_INTERCEPTOR(int, thrd_join, void *th, int *res) {
+  SCOPED_INTERCEPTOR_RAW(thrd_join, th, res);
+  Tid tid = ThreadConsumeTid(thr, pc, (uptr)th);
+  ThreadIgnoreBegin(thr, pc);
+  void *retval = nullptr;
+  int err = BLOCK_REAL(pthread_join)(th, &retval);
+  ThreadIgnoreEnd(thr);
+  if (err == 0) {
+    ThreadJoin(thr, pc, tid);
+    // glibc stores through res unconditionally; only doing so on success avoids
+    // handing back the uninitialized retval that pthread_join left alone.
+    if (res)
+      *res = (int)(uptr)retval;
+  }
+  return ThrdErrMap(err);
+}
+
+TSAN_INTERCEPTOR(int, thrd_detach, void *th) {
+  SCOPED_INTERCEPTOR_RAW(thrd_detach, th);
+  Tid tid = ThreadConsumeTid(thr, pc, (uptr)th);
+  int err = REAL(pthread_detach)(th);
+  if (err == 0)
+    ThreadDetach(thr, pc, tid);
+  return ThrdErrMap(err);
+}
+
+// Forwards to REAL(pthread_exit) rather than REAL(thrd_exit): that is what
+// glibc's thrd_exit does, and it keeps the pthread_exit interceptor's
+// bookkeeping applicable to C11 threads if it ever grows any.
+TSAN_INTERCEPTOR(void, thrd_exit, int res) {
+  {
+    SCOPED_INTERCEPTOR_RAW(thrd_exit, res);
+    CHECK_EQ(thr, &cur_thread_placeholder);
+  }
+  REAL(pthread_exit)((void *)(uptr)res);
+}
+#endif  // SANITIZER_GLIBC
 
 #if SANITIZER_LINUX
 TSAN_INTERCEPTOR(int, pthread_tryjoin_np, void *th, void **ret) {
@@ -3073,6 +3185,12 @@ void InitializeInterceptors() {
   TSAN_INTERCEPT(pthread_join);
   TSAN_INTERCEPT(pthread_detach);
   TSAN_INTERCEPT(pthread_exit);
+#if SANITIZER_GLIBC
+  TSAN_INTERCEPT(thrd_create);
+  TSAN_INTERCEPT(thrd_join);
+  TSAN_INTERCEPT(thrd_detach);
+  TSAN_INTERCEPT(thrd_exit);
+#endif
   #if SANITIZER_LINUX
   TSAN_INTERCEPT(pthread_tryjoin_np);
   TSAN_INTERCEPT(pthread_timedjoin_np);
