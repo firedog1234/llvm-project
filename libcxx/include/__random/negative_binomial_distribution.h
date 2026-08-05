@@ -130,7 +130,8 @@ operator<<(basic_ostream<_CharT, _Traits>& __os, const negative_binomial_distrib
   __os.flags(_OStream::dec | _OStream::left | _OStream::fixed | _OStream::scientific);
   _CharT __sp = __os.widen(' ');
   __os.fill(__sp);
-  return __os << __x.k() << __sp << __x.p();
+  typedef typename __libcpp_random_stream_type<_IntType>::type _StreamType;
+  return __os << static_cast<_StreamType>(__x.k()) << __sp << __x.p();
 }
 
 template <class _CharT, class _Traits, class _IntType>
@@ -142,11 +143,12 @@ operator>>(basic_istream<_CharT, _Traits>& __is, negative_binomial_distribution<
   __save_flags<_CharT, _Traits> __lx(__is);
   typedef basic_istream<_CharT, _Traits> _Istream;
   __is.flags(_Istream::dec | _Istream::skipws);
-  result_type __k;
+  typedef typename __libcpp_random_stream_type<result_type>::type _StreamType;
+  _StreamType __k;
   double __p;
   __is >> __k >> __p;
   if (!__is.fail())
-    __x.param(param_type(__k, __p));
+    __x.param(param_type(static_cast<result_type>(__k), __p));
   return __is;
 }
 

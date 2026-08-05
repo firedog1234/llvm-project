@@ -15,7 +15,6 @@
 #include <__type_traits/is_same.h>
 #include <__type_traits/is_unsigned.h>
 #include <__utility/declval.h>
-#include <cstdint>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
@@ -23,10 +22,11 @@
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
-// [rand.req.genl]/1.4:
-// The effect of instantiating a template that has a template type parameter
-// named RealType is undefined unless the corresponding template argument is
-// cv-unqualified and is one of float, double, or long double.
+// [rand.req.genl]/1.5:
+// If a template argument corresponding to a template parameter named RealType is neither a
+// standard floating-point type nor a member of an implementation-defined subset of extended
+// floating-point types, the program is ill-formed. libc++'s subset of extended floating-point
+// types is empty.
 
 template <class>
 struct __libcpp_random_is_valid_realtype : false_type {};
@@ -37,16 +37,22 @@ struct __libcpp_random_is_valid_realtype<double> : true_type {};
 template <>
 struct __libcpp_random_is_valid_realtype<long double> : true_type {};
 
-// [rand.req.genl]/1.5:
-// The effect of instantiating a template that has a template type parameter
-// named IntType is undefined unless the corresponding template argument is
-// cv-unqualified and is one of short, int, long, long long, unsigned short,
-// unsigned int, unsigned long, or unsigned long long.
+// [rand.req.genl]/1.6:
+// If a template argument corresponding to a template parameter named IntType is neither a standard
+// signed nor a standard unsigned integer type, nor an extended integer type whose width is greater
+// or equal to that of char and less than or equal to that of long long, nor a member of an
+// implementation-defined subset of integer types, the program is ill-formed.
+//
+// signed char and unsigned char are required by P4037R1, which is applied here as a defect report
+// against C++11 and is therefore not guarded by a language mode check. char, bool, wchar_t and the
+// charN_t types are integer types too, so an implementation is allowed to accept them, but they are
+// not part of libc++'s implementation-defined subset. That subset consists of the 128-bit integer
+// types, whose width is greater than that of long long.
 
 template <class>
 struct __libcpp_random_is_valid_inttype : false_type {};
 template <>
-struct __libcpp_random_is_valid_inttype<int8_t> : true_type {}; // extension
+struct __libcpp_random_is_valid_inttype<signed char> : true_type {};
 template <>
 struct __libcpp_random_is_valid_inttype<short> : true_type {};
 template <>
@@ -56,7 +62,7 @@ struct __libcpp_random_is_valid_inttype<long> : true_type {};
 template <>
 struct __libcpp_random_is_valid_inttype<long long> : true_type {};
 template <>
-struct __libcpp_random_is_valid_inttype<uint8_t> : true_type {}; // extension
+struct __libcpp_random_is_valid_inttype<unsigned char> : true_type {};
 template <>
 struct __libcpp_random_is_valid_inttype<unsigned short> : true_type {};
 template <>
@@ -72,6 +78,24 @@ struct __libcpp_random_is_valid_inttype<__int128_t> : true_type {}; // extension
 template <>
 struct __libcpp_random_is_valid_inttype<__uint128_t> : true_type {}; // extension
 #endif                                                               // _LIBCPP_HAS_INT128
+
+// The type a distribution streams an IntType value through. signed char and unsigned char have to
+// be widened first: inserting them would write a character instead of a number, and there is no
+// extractor for them at all when the stream's character type isn't char, so [rand.req.dist]'s
+// requirement that a distribution be restorable from its textual representation could not be met.
+
+template <class _IntType>
+struct __libcpp_random_stream_type {
+  typedef _IntType type;
+};
+template <>
+struct __libcpp_random_stream_type<signed char> {
+  typedef int type;
+};
+template <>
+struct __libcpp_random_stream_type<unsigned char> {
+  typedef unsigned int type;
+};
 
 // [rand.req.urng]/3:
 // A class G meets the uniform random bit generator requirements if G models

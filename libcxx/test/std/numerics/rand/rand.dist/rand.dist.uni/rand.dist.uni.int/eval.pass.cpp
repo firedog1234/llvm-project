@@ -118,11 +118,11 @@ int main(int, char**)
 
     test_statistics<short, std::minstd_rand0>(SHRT_MIN, SHRT_MAX);
 
-#if defined(_LIBCPP_VERSION) // extension
-    test_statistics<std::int8_t, std::minstd_rand0>();
-    test_statistics<std::uint8_t, std::minstd_rand0>();
+    test_statistics<signed char, std::minstd_rand0>();
+    test_statistics<unsigned char, std::minstd_rand0>();
 
-#if !defined(TEST_HAS_NO_INT128)
+#if defined(_LIBCPP_VERSION) // extension
+#  if !defined(TEST_HAS_NO_INT128)
     test_statistics<__int128_t, std::minstd_rand0>();
     test_statistics<__uint128_t, std::minstd_rand0>();
 

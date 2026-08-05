@@ -55,6 +55,7 @@ Implemented Papers
 - P3369R0: constexpr for ``uninitialized_default_construct`` (`Github <https://llvm.org/PR118380>`__)
 - P3508R0: Wording for "constexpr for specialized memory algorithms" (`Github <https://llvm.org/PR118379>`__)
 - P4206R0: Revert string support in ``std::constant_wrapper`` (`Github <https://llvm.org/PR203338>`__)
+- P4037R1: Supporting ``signed char`` and ``unsigned char`` in random number generation (`Github <https://llvm.org/PR189609>`__)
 
 Improvements and New Features
 -----------------------------
@@ -97,6 +98,11 @@ Potentially breaking changes
 
 - The output of ``ostream << std::thread::id`` and ``std::format("...", std::thread:id)`` changes on some platforms from
   hexadecimal to decimal. This is done to have consistent formatting across all platforms libc++ supports.
+
+- Inserting a distribution whose ``IntType`` is ``signed char`` or ``unsigned char`` into a stream now writes the
+  distribution's parameters as numbers instead of as characters, and extraction reads them back as numbers. These types
+  were previously supported as an extension (spelled ``std::int8_t``/``std::uint8_t``) whose textual representation
+  didn't round-trip, so representations written by older versions of libc++ can't be read back.
 
 Announcements About Future Releases
 -----------------------------------

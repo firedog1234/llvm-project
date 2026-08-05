@@ -237,7 +237,8 @@ operator<<(basic_ostream<_CharT, _Traits>& __os, const uniform_int_distribution<
   __os.flags(_Ostream::dec | _Ostream::left);
   _CharT __sp = __os.widen(' ');
   __os.fill(__sp);
-  return __os << __x.a() << __sp << __x.b();
+  typedef typename __libcpp_random_stream_type<_IT>::type _StreamType;
+  return __os << static_cast<_StreamType>(__x.a()) << __sp << static_cast<_StreamType>(__x.b());
 }
 
 template <class _CharT, class _Traits, class _IT>
@@ -249,11 +250,12 @@ operator>>(basic_istream<_CharT, _Traits>& __is, uniform_int_distribution<_IT>& 
   __save_flags<_CharT, _Traits> __lx(__is);
   typedef basic_istream<_CharT, _Traits> _Istream;
   __is.flags(_Istream::dec | _Istream::skipws);
-  result_type __a;
-  result_type __b;
+  typedef typename __libcpp_random_stream_type<result_type>::type _StreamType;
+  _StreamType __a;
+  _StreamType __b;
   __is >> __a >> __b;
   if (!__is.fail())
-    __x.param(param_type(__a, __b));
+    __x.param(param_type(static_cast<result_type>(__a), static_cast<result_type>(__b)));
   return __is;
 }
 

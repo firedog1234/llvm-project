@@ -138,8 +138,11 @@ _IntType binomial_distribution<_IntType>::operator()(_URNG& __g, const param_typ
     }
     if (__rd != 0)
       --__rd;
-    ++__ru;
-    if (__ru <= __pr.__t_) {
+    // Guarding the increment instead of testing __ru against __t_ afterwards keeps __ru from
+    // overflowing once it has walked all the way up to __t_, which is reachable for a result_type
+    // as narrow as signed char.
+    if (__ru < __pr.__t_) {
+      ++__ru;
       __pu *= (__pr.__t_ - __ru + 1) * __pr.__odds_ratio_ / __ru;
       __u -= __pu;
       __break = false;
@@ -159,7 +162,8 @@ operator<<(basic_ostream<_CharT, _Traits>& __os, const binomial_distribution<_In
   __os.flags(_OStream::dec | _OStream::left | _OStream::fixed | _OStream::scientific);
   _CharT __sp = __os.widen(' ');
   __os.fill(__sp);
-  return __os << __x.t() << __sp << __x.p();
+  typedef typename __libcpp_random_stream_type<_IntType>::type _StreamType;
+  return __os << static_cast<_StreamType>(__x.t()) << __sp << __x.p();
 }
 
 template <class _CharT, class _Traits, class _IntType>
@@ -171,11 +175,12 @@ operator>>(basic_istream<_CharT, _Traits>& __is, binomial_distribution<_IntType>
   __save_flags<_CharT, _Traits> __lx(__is);
   typedef basic_istream<_CharT, _Traits> _Istream;
   __is.flags(_Istream::dec | _Istream::skipws);
-  result_type __t;
+  typedef typename __libcpp_random_stream_type<result_type>::type _StreamType;
+  _StreamType __t;
   double __p;
   __is >> __t >> __p;
   if (!__is.fail())
-    __x.param(param_type(__t, __p));
+    __x.param(param_type(static_cast<result_type>(__t), __p));
   return __is;
 }
 

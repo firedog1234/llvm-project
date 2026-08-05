@@ -314,11 +314,13 @@ int main(int, char**) {
     tests<unsigned long>();
     tests<unsigned long long>();
 
+    // signed char and unsigned char are supported, but not with these parameters: std::geometric_distribution
+    // is unbounded, and the values these parameters produce routinely exceed what a single byte can
+    // represent, so the sample statistics below can't hold. See eval_char.pass.cpp for coverage of
+    // the character types with parameters that fit.
+
 #if defined(_LIBCPP_VERSION) // extension
-    // TODO: std::geometric_distribution currently doesn't work reliably with small types.
-    // tests<int8_t>();
-    // tests<uint8_t>();
-#if !defined(TEST_HAS_NO_INT128)
+#  if !defined(TEST_HAS_NO_INT128)
     tests<__int128_t>();
     tests<__uint128_t>();
 #endif
