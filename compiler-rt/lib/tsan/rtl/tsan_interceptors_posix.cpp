@@ -1226,6 +1226,81 @@ TSAN_INTERCEPTOR(int, pthread_timedjoin_np, void *th, void **ret,
 }
 #endif
 
+#if SANITIZER_GLIBC
+const int thrd_success_code = 0;
+const int thrd_busy_code = 1;
+const int thrd_error_code = 2;
+const int thrd_nomem_code = 3;
+
+
+static int ThrdErrMap(int err) {
+  switch (err) {
+  case 0:
+    return thrd_success_code;
+  case errno_ENOMEM:
+    return thrd_nomem_code;
+  case errno_EBUSY:
+    return thrd_busy_code;
+  default:
+    return thrd_error_code;
+  }
+}
+
+// A C11 thread callback returns int, while pthread_create() expects a function
+// returning void *. We pass this bundle through pthread_create()'s void *
+// argument and run the callback from a wrapper below.
+struct C11ThreadParam {
+  int (*callback)(void *arg);
+  void *param;
+};
+
+static void *c11_thread_start_func(void *arg) {
+  C11ThreadParam *p = static_cast<C11ThreadParam *>(arg);
+  int (*callback)(void *arg) = p->callback;
+  void *param = p->param;
+  // Free before invoking the callback: a C11 thread may terminate by calling
+  // thrd_exit(), which does not return and would otherwise leak p.
+  Free(p);
+  int res = callback(param);
+  // Prevent the callback from being tail called
+  volatile int foo = 42;
+  foo++;
+  return (void *)(uptr)res;
+}
+
+TSAN_INTERCEPTOR(int, thrd_create, void *th, int (*callback)(void *),
+                 void *param) {
+  SCOPED_INTERCEPTOR_RAW(thrd_create, th, callback, param);
+  C11ThreadParam *p = New<C11ThreadParam>();
+  p->callback = callback;
+  p->param = param;
+
+  int res = WRAP(pthread_create)(th, nullptr, c11_thread_start_func, p);
+  // On failure the new thread never runs, so it cannot free p.
+  if (res != 0)
+    Free(p);
+  return ThrdErrMap(res);
+}
+
+TSAN_INTERCEPTOR(int, thrd_join, void *th, int *res) {
+  SCOPED_INTERCEPTOR_RAW(thrd_join, th, res);
+  void *retval = (void*)res;
+  int err = WRAP(pthread_join)(th, &retval);
+
+  if (err == 0 && res)
+    *res = (int)(uptr)retval;
+  return ThrdErrMap(err);
+}
+
+TSAN_INTERCEPTOR(int, thrd_detach, void *th) {
+  SCOPED_INTERCEPTOR_RAW(thrd_detach, th);
+  return ThrdErrMap(WRAP(pthread_detach)(th));
+}
+
+// thrd_exit() deliberately has no interceptor since it forwards to __pthread_exit(),
+// and the pthread_exit interceptor performs no bookkeeping of its own.
+#endif
+
 // Problem:
 // NPTL implementation of pthread_cond has 2 versions (2.2.5 and 2.3.2).
 // pthread_cond_t has different size in the different versions.
@@ -3076,6 +3151,11 @@ void InitializeInterceptors() {
   #if SANITIZER_LINUX
   TSAN_INTERCEPT(pthread_tryjoin_np);
   TSAN_INTERCEPT(pthread_timedjoin_np);
+  #endif
+  #if SANITIZER_GLIBC
+  TSAN_INTERCEPT(thrd_create);
+  TSAN_INTERCEPT(thrd_join);
+  TSAN_INTERCEPT(thrd_detach);
   #endif
 
   // In glibc versions older than 2.36, dlsym(RTLD_NEXT, "pthread_cond_init")
